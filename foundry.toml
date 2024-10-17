@@ -1,0 +1,11 @@
+[profile.default]
+
+solc_version = "0.8.27"
+
+optimizer = true
+
+remappings = [
+	'@openzeppelin/contracts=lib/openzeppelin-contracts/contracts/',
+	'@ensdomains/ens-contracts=lib/ens-contracts/',
+	'@ensdomains/buffer=lib/buffer'
+]
