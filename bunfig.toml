@@ -1,0 +1,6 @@
+# https://bun.sh/docs/runtime/bunfig
+
+telemetry = false
+
+[test]
+root = "test/" # restrict to just our tests

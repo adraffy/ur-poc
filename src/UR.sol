@@ -6,8 +6,6 @@ import {ENS} from "@ensdomains/ens-contracts/contracts/registry/ENS.sol";
 import {IExtendedResolver} from "@ensdomains/ens-contracts/contracts/resolvers/profiles/IExtendedResolver.sol";
 import {BytesUtils} from "@ensdomains/ens-contracts/contracts/utils/BytesUtils.sol";
 
-import "forge-std/console2.sol";
-
 // https://eips.ethereum.org/EIPS/eip-3668
 error OffchainLookup(
     address from,
@@ -30,27 +28,17 @@ interface BatchedGateway {
     function query(
         Query[] memory
     ) external view returns (bool[] memory failures, bytes[] memory responses);
-    struct HttpErrorTuple {
-        uint16 status;
-        string message;
-    }
-    error HttpError(HttpErrorTuple[] errors);
 }
 
-uint256 constant ERROR_BIT = 1 << 0;
-uint256 constant OFFCHAIN_BIT = 1 << 1;
-uint256 constant BATCHED_BIT = 1 << 2;
-uint256 constant RESOLVED_BIT = 1 << 3;
+uint256 constant ERROR_BIT = 1 << 0; // resolution failed
+uint256 constant OFFCHAIN_BIT = 1 << 1; // reverted OffchainLookup
+uint256 constant BATCHED_BIT = 1 << 2; // used Batched Gateway
+uint256 constant RESOLVED_BIT = 1 << 3; // resolution finished (internal flag)
 
 contract UR {
     error Unreachable(bytes name);
     error LengthMismatch();
     error InvalidCCIPRead();
-
-    struct Response {
-        uint256 bits;
-        bytes data;
-    }
 
     ENS immutable _ens;
     string[] _urls;
@@ -60,71 +48,60 @@ contract UR {
         _urls = urls;
     }
 
+    struct Response {
+        uint256 bits;
+        bytes data;
+    }
+
     function resolve(
         bytes memory name,
         bytes[] memory calls
     ) external view returns (Lookup memory lookup, Response[] memory res) {
         lookup = lookupResolver(name); // do ensip-15
-        // console2.log("[node]");
-        // console2.logBytes32(lookup.node);
-        // console2.log(
-        //     "[resolver=%s extended=%s, offset=%s]",
-        //     lookup.resolver,
-        //     lookup.extended,
-        //     lookup.offset
-        // );
-        res = new Response[](calls.length);
-        uint256 missing;
+        res = new Response[](calls.length); // create result storage
+        uint256 missing; // count how many offchain
         for (uint256 i; i < res.length; i++) {
             bytes memory call = lookup.extended
                 ? abi.encodeCall(IExtendedResolver.resolve, (name, calls[i]))
                 : calls[i];
-            (bool ok, bytes memory v) = lookup.resolver.staticcall(call);
-            if (ok && lookup.extended) v = abi.decode(v, (bytes)); // unwrap resolve
+            (bool ok, bytes memory v) = lookup.resolver.staticcall(call); // call it
+            if (ok && lookup.extended) v = abi.decode(v, (bytes)); // unwrap if wildcard
             res[i].data = v;
             if (!ok && bytes4(v) == OffchainLookup.selector) {
-                res[i].bits |= OFFCHAIN_BIT;
-                calls[missing++] = call;
-                // console2.log("[missing #%s]", missing);
-                // console2.logBytes(call);
+                res[i].bits |= OFFCHAIN_BIT; // mark this result as offchain
+                calls[missing++] = calls[i]; // assemble calldata for resolve(multicall)
             } else {
-                if (!ok) res[i].bits |= ERROR_BIT;
-                res[i].bits |= RESOLVED_BIT;
+                if (!ok) res[i].bits |= ERROR_BIT; // mark this as a failure
+                res[i].bits |= RESOLVED_BIT; // the answer was onchain, we're done
             }
         }
-        //console2.log("[missing=%s]", missing);
-        if (lookup.wrappable) {
-            if (missing > 1) {
-                assembly {
-                    mstore(calls, missing)
-                }
-                bytes memory multi = abi.encodeCall(
-                    ResolveMulticall.multicall,
-                    (calls)
-                );
-                (bool ok, bytes memory v) = lookup.resolver.staticcall(
-                    abi.encodeCall(IExtendedResolver.resolve, (name, multi))
-                );
-                if (ok) {
-                    _processMulticallAnswers(res, v);
-                } else if (bytes4(v) == OffchainLookup.selector) {
-                    _revertWrappedOffchain(
-                        v,
-                        res,
-                        lookup,
-                        lookup.resolver,
-                        true
-                    );
-                }
-            } else if (missing == 1) {
-                uint256 i = _requireFirstUnresolved(res, 0);
-                _revertWrappedOffchain(
-                    res[i].data,
-                    res,
-                    lookup,
-                    lookup.resolver,
-                    false
-                );
+        if (missing == 1) {
+            // only one record was missing, wrap and call directly
+            uint256 i = _requireFirstUnresolved(res, 0);
+            _revertWrappedOffchain(
+                res[i].data,
+                res,
+                lookup,
+                lookup.resolver,
+                false
+            );
+        }
+        if (missing > 1) {
+            // multiple records were missing, try resolve(multicall)
+            assembly {
+                mstore(calls, missing) // truncate
+            }
+            bytes memory multi = abi.encodeCall(
+                ResolveMulticall.multicall,
+                (calls)
+            );
+            (bool ok, bytes memory v) = lookup.resolver.staticcall(
+                abi.encodeCall(IExtendedResolver.resolve, (name, multi))
+            );
+            if (!ok && bytes4(v) == OffchainLookup.selector) {
+                // since this is now effectively only 1 record, wrap, and call directly
+                // we mark multi = true as this is our own construction
+                _revertWrappedOffchain(v, res, lookup, lookup.resolver, true);
             }
         }
         if (missing > 0) {
@@ -137,7 +114,6 @@ contract UR {
         bytes32 node;
         address resolver;
         bool extended;
-        bool wrappable;
     }
 
     function lookupResolver(
@@ -148,8 +124,8 @@ contract UR {
                 lookup.node = BytesUtils.namehash(name, lookup.offset);
                 lookup.resolver = _ens.resolver(lookup.node);
                 if (lookup.resolver != address(0)) break;
-				uint256 len = uint8(name[lookup.offset]);
-				if (len == 0) revert Unreachable(name);
+                uint256 len = uint8(name[lookup.offset]);
+                if (len == 0) revert Unreachable(name);
                 lookup.offset += 1 + len;
             }
             if (
@@ -159,12 +135,6 @@ contract UR {
                 )
             ) {
                 lookup.extended = true;
-                // until ccip can survive 4XX we can only call resolve(multicall)
-                // on resolvers that can handle it
-                lookup.wrappable = _supportsInterface(
-                    lookup.resolver,
-                    0x73302a25
-                );
             } else if (lookup.offset != 0) {
                 revert Unreachable(name);
             }
@@ -198,7 +168,7 @@ contract UR {
                 _slice(revertData, 4),
                 (address, string[], bytes, bytes4, bytes)
             );
-        if (caller != sender) revert InvalidCCIPRead(); // caller != sender
+        if (caller != sender) revert InvalidCCIPRead();
         revert OffchainLookup(
             address(this),
             urls,
@@ -234,17 +204,19 @@ contract UR {
                 _revertBatchedGateway(res, lookup);
             }
         } else {
-            if (bytes4(wrapped.request) == IExtendedResolver.resolve.selector) {
-                v = abi.decode(v, (bytes)); // unwrap resolve()
-            }
             uint256 i = _requireFirstUnresolved(res, 0);
             if (!ok && bytes4(v) == OffchainLookup.selector) {
                 _revertWrappedOffchain(v, res, lookup, wrapped.sender, false);
-            } else {
-                res[i].data = v;
-                res[i].bits |= RESOLVED_BIT;
-                if (!ok) res[i].bits |= ERROR_BIT;
             }
+            if (
+                ok &&
+                bytes4(wrapped.request) == IExtendedResolver.resolve.selector
+            ) {
+                v = abi.decode(v, (bytes)); // unwrap resolve()
+            }
+            res[i].data = v;
+            if (!ok) res[i].bits |= ERROR_BIT;
+            res[i].bits |= RESOLVED_BIT;
         }
     }
 
@@ -344,18 +316,15 @@ contract UR {
         Response[] memory res,
         bytes memory encoded
     ) internal pure {
+        encoded = abi.decode(encoded, (bytes)); // unwrap resolve
         bytes[] memory answers = abi.decode(encoded, (bytes[]));
         uint256 expected;
         for (uint256 i; i < res.length; i++) {
             if ((res[i].bits & RESOLVED_BIT) == 0) {
-                res[i].bits |= RESOLVED_BIT;
                 bytes memory v = answers[expected++];
-                if ((v.length & 31) != 0) {
-                    res[i].bits |= ERROR_BIT;
-                    res[i].data = v;
-                } else {
-                    res[i].data = abi.decode(v, (bytes)); // unwrap resolve()
-                }
+                res[i].data = v;
+                if ((v.length & 31) != 0) res[i].bits |= ERROR_BIT;
+                res[i].bits |= RESOLVED_BIT;
             }
         }
         if (expected != answers.length) revert LengthMismatch();

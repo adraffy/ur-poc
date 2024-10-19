@@ -1,7 +1,7 @@
-
 1. `foundryup`
-1. `npm i`
-1. `npm test`
+1. `bun i`
+1. `bun run test`
 
-* `npm run fetch raffy.eth`
-* `npm run fetch raffy.eth text:location addr:60`
+* `bun run fetch raffy.eth`
+* `bun run fetch raffy.eth text:location addr:60`
+ 
