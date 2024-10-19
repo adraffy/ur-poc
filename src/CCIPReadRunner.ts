@@ -52,24 +52,24 @@ export class CCIPReadRunner implements ContractRunner {
 		if (answer.sender !== origin) throw new Error("origin != sender");
 		if (!isLookup(answer)) throw new Error("unexpected next()");
 		let index = 0;
-		let prev = answer;
+		let lookup = answer;
 		for (let n = this.maxAttempts; n > 0; n--) {
 			let url: string;
 			let response: string;
-			if (index < prev.urls.length) {
+			if (index < lookup.urls.length) {
 				// we still have endpoints to try
-				url = prev.urls[index++];
+				url = lookup.urls[index++];
 				try {
-					// [ERC-3668] build request according
+					// [ERC-3668] build request
 					const options: RequestInit = {};
 					if (!url.includes("{data}")) {
 						options.method = "POST";
 						options.body = JSON.stringify({
 							sender: origin,
-							data: prev.request,
+							data: lookup.request,
 						});
 					}
-					url = url.replaceAll("{data}", prev.request);
+					url = url.replaceAll("{data}", lookup.request);
 					url = url.replaceAll("{sender}", origin);
 					const res = await fetch(url, options); // call it
 					// ignore res.status, assume json
@@ -86,10 +86,10 @@ export class CCIPReadRunner implements ContractRunner {
 			}
 			// [ERC-3668] build callback response
 			const data = concat([
-				prev.callback,
+				lookup.callback,
 				AbiCoder.defaultAbiCoder().encode(
 					["bytes", "bytes"],
-					[response, prev.carry]
+					[response, lookup.carry]
 				),
 			]);
 			answer = await this._call({ to: origin, data });
@@ -100,7 +100,7 @@ export class CCIPReadRunner implements ContractRunner {
 			// if next is a new OffchainLookup(), reset iterator and keep going
 			if (isLookup(answer)) {
 				index = 0;
-				prev = answer;
+				lookup = answer;
 			} else if (response === UNANSWERED) {
 				throw new Error("unexpected next()"); // next() at end makes no sense
 			}

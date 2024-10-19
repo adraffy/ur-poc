@@ -57,7 +57,7 @@ contract UR {
         bytes memory name,
         bytes[] memory calls
     ) external view returns (Lookup memory lookup, Response[] memory res) {
-        lookup = lookupResolver(name); // do ensip-15
+        lookup = lookupResolver(name); // do ensip-10
         res = new Response[](calls.length); // create result storage
         uint256 missing; // count how many offchain
         for (uint256 i; i < res.length; i++) {
