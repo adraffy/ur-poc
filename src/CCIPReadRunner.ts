@@ -37,22 +37,22 @@ export class CCIPReadRunner implements ContractRunner {
 	get provider() {
 		return this.runner.provider;
 	}
-	async call(tx0: TransactionRequest): Promise<string> {
+	async call(tx: TransactionRequest): Promise<string> {
 		// if we don't need ccip, just use standard call()
-		if (!tx0.to || !tx0.enableCcipRead) return this.runner.call!(tx0);
+		if (!tx.to || !tx.enableCcipRead) return this.runner.call!(tx);
 		// force resolve the target and remember it
-		const origin = await resolveAddress(tx0.to);
-		let lookup = await this._call({
-			...tx0, // call the original tx
+		const origin = await resolveAddress(tx.to);
+		let answer = await this._call({
+			...tx, // call the original tx
 			to: origin,
 			enableCcipRead: false, // disable ccip-read
 		});
-		if (typeof lookup === "string") return lookup; // it answered immediately
+		if (typeof answer === "string") return answer; // it answered immediately
 		// [ERC-3668] sender must match
-		if (lookup.sender !== origin) throw new Error("origin != sender");
-		if (!isLookup(lookup)) throw new Error("unexpected next()");
+		if (answer.sender !== origin) throw new Error("origin != sender");
+		if (!isLookup(answer)) throw new Error("unexpected next()");
 		let index = 0;
-		let prev = lookup;
+		let prev = answer;
 		for (let n = this.maxAttempts; n > 0; n--) {
 			let url: string;
 			let response: string;
@@ -92,17 +92,17 @@ export class CCIPReadRunner implements ContractRunner {
 					[response, prev.carry]
 				),
 			]);
-			const next = await this._call({ to: origin, data });
-			if (typeof next === "string") return next; // answered immediately
-			if (response === UNANSWERED && !isLookup(next))
-				throw new Error("unexpected next()");
+			answer = await this._call({ to: origin, data });
+			if (typeof answer === "string") return answer; // answered immediately
 			// [ERC-3668] recursive, sender must still match
-			if (next.sender !== origin) throw new Error("origin != sender");
+			if (answer.sender !== origin) throw new Error("origin != sender");
 			// if next is OffchainTryNext(), just continue
 			// if next is a new OffchainLookup(), reset iterator and keep going
-			if (isLookup(next)) {
+			if (isLookup(answer)) {
 				index = 0;
-				prev = next;
+				prev = answer;
+			} else if (response === UNANSWERED) {
+				throw new Error("unexpected next()"); // next() at end makes no sense
 			}
 		}
 		throw new Error(`'ccip read: max attempts (${this.maxAttempts})`);
