@@ -14,7 +14,7 @@ const ezccip = new EZCCIP();
 ezccip.register("f() returns (string)", (_, context) => {
 	let match = context.url?.match(/^\/(\d+)$/);
 	if (match) throw { status: parseInt(match[1]) };
-	if (context.url === "/malicious") return "0x12345";
+	if (context.url === "/malicious") return "0x123456";
 	if (context.url === "/wrong") return ["not chonk"];
 	return ["chonk"];
 });
@@ -60,7 +60,7 @@ describe("OffchainLookupUnanswered()", async () => {
 
 describe("OffchainTryNext()", async () => {
 	// deploy a contract that does ccip-read
-	// it waits for a gateway to response with "chonk" before it returns "CHONK"
+	// it waits for a gateway to respond with "chonk" before it returns "CHONK"
 	// it survives: 4XX, invalid response encoding, invalid server value
 	const contract = await foundry.deploy({
 		sol: `

@@ -50,7 +50,7 @@ contract URAlwaysBatched {
             if (ok && lookup.extended) v = abi.decode(v, (bytes)); // unwrap resolve()
             res[i].data = v;
             if (!ok && bytes4(v) == OffchainLookup.selector) {
-                res[i].bits |= OFFCHAIN_BIT;
+                res[i].bits |= OFFCHAIN_BIT | BATCHED_BIT;
                 calls[missing++] = calls[i]; // assemble calldata for resolve(multicall)
             } else {
                 if (!ok) res[i].bits |= ERROR_BIT;
@@ -73,12 +73,10 @@ contract URAlwaysBatched {
                 Response[] memory bundle = new Response[](1);
                 bundle[0].bits = OFFCHAIN_BIT;
                 bundle[0].data = v;
-                _markAsBatched(res);
                 _revertBatchedGateway(lookup, bundle, res);
             }
         }
         if (missing > 0) {
-            _markAsBatched(res);
             _revertBatchedGateway(lookup, res, new Response[](0));
         }
     }
@@ -220,14 +218,6 @@ contract URAlwaysBatched {
     }
 
     // utils
-
-    function _markAsBatched(Response[] memory res) internal pure {
-        for (uint256 i; i < res.length; i++) {
-            if ((res[i].bits & OFFCHAIN_BIT) != 0) {
-                res[i].bits |= BATCHED_BIT;
-            }
-        }
-    }
 
     function _processMulticallAnswers(
         Response[] memory res,
