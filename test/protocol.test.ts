@@ -26,6 +26,10 @@ const runner = new CCIPReadRunner(foundry.provider);
 const opts = { enableCcipRead: true };
 
 describe("OffchainLookupUnanswered()", async () => {
+	// deploy a contract that does ccip-read
+	// but has no successful endpoints
+	// with new protocol, it gets a callback of OffchainLookupUnanswered()
+	// so it can fail gracefully
 	const contract = await foundry.deploy(`
 		import "@src/CCIPReadProtocol.sol";
 		contract C {
@@ -55,6 +59,9 @@ describe("OffchainLookupUnanswered()", async () => {
 });
 
 describe("OffchainTryNext()", async () => {
+	// deploy a contract that does ccip-read
+	// it waits for a gateway to response with "chonk" before it returns "CHONK"
+	// it survives: 4XX, invalid response encoding, invalid server value
 	const contract = await foundry.deploy({
 		sol: `
 			import "@src/CCIPReadProtocol.sol";
@@ -90,6 +97,8 @@ describe("OffchainTryNext()", async () => {
 		`,
 		args: [
 			[
+				ccip.endpoint + "/404",
+				ccip.endpoint + "/500",
 				ccip.endpoint + "/wrong",
 				ccip.endpoint + "/malicious",
 				ccip.endpoint,
