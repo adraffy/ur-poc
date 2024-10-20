@@ -5,15 +5,7 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {ENS} from "@ensdomains/ens-contracts/contracts/registry/ENS.sol";
 import {IExtendedResolver} from "@ensdomains/ens-contracts/contracts/resolvers/profiles/IExtendedResolver.sol";
 import {BytesUtils} from "@ensdomains/ens-contracts/contracts/utils/BytesUtils.sol";
-
-// https://eips.ethereum.org/EIPS/eip-3668
-error OffchainLookup(
-    address from,
-    string[] urls,
-    bytes request,
-    bytes4 callback,
-    bytes carry
-);
+import {OffchainLookup} from "./CCIPReadProtocol.sol";
 
 interface ResolveMulticall {
     function multicall(bytes[] calldata) external view returns (bytes[] memory);
@@ -34,8 +26,6 @@ uint256 constant ERROR_BIT = 1 << 0; // resolution failed
 uint256 constant OFFCHAIN_BIT = 1 << 1; // reverted OffchainLookup
 uint256 constant BATCHED_BIT = 1 << 2; // used Batched Gateway
 uint256 constant RESOLVED_BIT = 1 << 3; // resolution finished (internal flag)
-
-import "forge-std/console2.sol";
 
 contract URAlwaysBatched {
     error Unreachable(bytes name);
@@ -188,6 +178,7 @@ contract URAlwaysBatched {
         if (failures.length != responses.length) revert LengthMismatch();
         if (multi.length > 0 && failures[0]) {
             // this was a failed resolve(multicall) attempt
+            // try doing the calls separately
             _revertBatchedGateway(lookup, multi, new Response[](0));
         }
         bool again;
@@ -235,6 +226,8 @@ contract URAlwaysBatched {
             if ((res[0].bits & ERROR_BIT) != 0) {
                 // server responded for resolve(multicall)
                 // but contract rejected it
+                // we could propagate the error to all of the responses
+                //or resolve them separately <== chose this option
                 _revertBatchedGateway(lookup, multi, new Response[](0));
             } else {
                 // successful resolve(multicall)
