@@ -6,21 +6,10 @@ import {ENS} from "@ensdomains/ens-contracts/contracts/registry/ENS.sol";
 import {IExtendedResolver} from "@ensdomains/ens-contracts/contracts/resolvers/profiles/IExtendedResolver.sol";
 import {BytesUtils} from "@ensdomains/ens-contracts/contracts/utils/BytesUtils.sol";
 import {OffchainLookup} from "./CCIPReadProtocol.sol";
+import {BatchedGateway} from "./IBatchedGateway.sol";
 
 interface ResolveMulticall {
     function multicall(bytes[] calldata) external view returns (bytes[] memory);
-}
-
-interface BatchedGateway {
-    struct Query {
-        address target;
-        string[] urls;
-        bytes data;
-    }
-
-    function query(
-        Query[] memory
-    ) external view returns (bool[] memory failures, bytes[] memory responses);
 }
 
 uint256 constant ERROR_BIT = 1 << 0; // resolution failed
