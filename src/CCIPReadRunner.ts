@@ -33,7 +33,7 @@ function isLookup(x: OffchainLookup | OffchainSender): x is OffchainLookup {
 }
 
 export class CCIPReadRunner implements ContractRunner {
-	constructor(readonly runner: ContractRunner, readonly maxAttempts = 20) {}
+	constructor(readonly runner: ContractRunner, readonly maxAttempts = 20, readonly debug = false) {}
 	get provider() {
 		return this.runner.provider;
 	}
@@ -114,15 +114,19 @@ export class CCIPReadRunner implements ContractRunner {
 		try {
 			return await this.runner.call!(tx);
 		} catch (err) {
+			// propagate non-call or unparsable call errors
 			if (!isCallException(err) || !err.data || err.data.length < 10) {
 				throw err;
 			}
-			const error = ABI.parseError(err.data);
-			if (error?.name === "OffchainLookup") {
-				return <OffchainLookup>error.args.toObject();
-			} else if (error?.name === "OffchainTryNext") {
-				return <OffchainSender>error.args.toObject();
-			}
+			try {
+				const error = ABI.parseError(err.data);
+				switch (error?.name) {
+					case "OffchainLookup":
+						return error.args.toObject() as OffchainLookup;
+					case "OffchainTryNext":
+						return error.args.toObject() as OffchainSender;
+				}
+			} catch (parseError) {}
 			throw err;
 		}
 	}

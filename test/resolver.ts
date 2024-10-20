@@ -24,16 +24,18 @@ const BATCHED_ABI = new Interface([
 	"error HttpError((uint16 status, string message)[] errors)",
 ]);
 
+type BatchedHTTPError = [code: bigint, message: string];
+
 export type ENSRecord =
 	| ["addr", arg?: BigNumberish]
 	| ["text", arg: string]
 	| ["contenthash" | "pubkey" | "name" | "dne"];
 
 type URLookup = {
-	node: string;
+	offset: bigint;
+	basenode: string;
 	resolver: string;
 	extended: boolean;
-	offset: bigint;
 };
 type URResponse = { bits: bigint; data: string };
 type URABIResult = [URLookup, URResponse[]];
@@ -49,9 +51,9 @@ type ParsedURResponse = {
 	result?: any[];
 };
 
-export async function deployUR(foundry: Foundry) {
+export async function deployUR(foundry: Foundry, file = "UR") {
 	return foundry.deploy({
-		file: "UR",
+		file,
 		args: [
 			"0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e",
 			["https://ccip-v2.ens.xyz"],
@@ -59,12 +61,16 @@ export async function deployUR(foundry: Foundry) {
 	});
 }
 
-function fragFromRecord([frag, arg]: ENSRecord) {
-	return frag === "addr"
-		? arg === undefined
-			? "addr(bytes32)"
-			: "addr(bytes32,uint256)"
-		: frag;
+function fragFromRecord([type, arg]: ENSRecord) {
+	const frag = ABI.getFunction(
+		type === "addr"
+			? arg === undefined
+				? "addr(bytes32)"
+				: "addr(bytes32,uint256)"
+			: type
+	);
+	if (!frag) throw new Error(`unknown record type: ${type}`);
+	return frag;
 }
 
 export function createResolve(UR: Contract) {
@@ -73,7 +79,7 @@ export function createResolve(UR: Contract) {
 		const dnsname = dnsEncode(name, 255);
 		const node = namehash(name);
 		const [
-			{ node: basenode, resolver, extended, offset: bigOffset },
+			{ basenode, resolver, extended, offset: bigOffset },
 			answers,
 		]: URABIResult = await UR.resolve(
 			dnsname,
@@ -88,11 +94,12 @@ export function createResolve(UR: Contract) {
 		);
 		const offset = Number(bigOffset);
 		return {
+			name,
 			dnsname,
 			node,
+			basename: toUtf8String(toUtf8Bytes(name).subarray(offset)),
 			basenode,
 			offset,
-			basename: toUtf8String(toUtf8Bytes(name).subarray(offset)),
 			resolver,
 			extended,
 			records: answers.map(({ bits, data }, i) => {
@@ -100,11 +107,11 @@ export function createResolve(UR: Contract) {
 				const error = !!(bits & 1n);
 				const offchain = !!(bits & 2n);
 				const batched = !!(bits & 4n);
-				const frag = ABI.getFunction(fragFromRecord(record))!;
+				const frag = fragFromRecord(record);
 				const ret: ParsedURResponse = {
+					error,
 					offchain,
 					batched,
-					error,
 					record,
 					frag: frag.format(),
 					data,
@@ -122,15 +129,10 @@ export function createResolve(UR: Contract) {
 					try {
 						const desc = BATCHED_ABI.parseError(data);
 						if (desc) {
-							const errors = desc.args[0] as [
-								code: bigint,
-								message: string
-							][];
+							const errors: BatchedHTTPError[] = desc.args[0];
 							ret.err = new Error(
 								`HTTPErrors[${errors.length}]: ${errors.map(
-									([code, message]) => {
-										return `${code}:${message}`;
-									}
+									([code, message]) => `${code}:${message}`
 								)}`
 							);
 						}

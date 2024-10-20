@@ -5,7 +5,15 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {ENS} from "@ensdomains/ens-contracts/contracts/registry/ENS.sol";
 import {IExtendedResolver} from "@ensdomains/ens-contracts/contracts/resolvers/profiles/IExtendedResolver.sol";
 import {BytesUtils} from "@ensdomains/ens-contracts/contracts/utils/BytesUtils.sol";
-import {OffchainLookup} from "./CCIPReadProtocol.sol";
+
+// https://eips.ethereum.org/EIPS/eip-3668
+error OffchainLookup(
+    address from,
+    string[] urls,
+    bytes request,
+    bytes4 callback,
+    bytes carry
+);
 
 interface ResolveMulticall {
     function multicall(bytes[] calldata) external view returns (bytes[] memory);
@@ -27,7 +35,9 @@ uint256 constant OFFCHAIN_BIT = 1 << 1; // reverted OffchainLookup
 uint256 constant BATCHED_BIT = 1 << 2; // used Batched Gateway
 uint256 constant RESOLVED_BIT = 1 << 3; // resolution finished (internal flag)
 
-contract UR {
+import "forge-std/console2.sol";
+
+contract URAlwaysBatched {
     error Unreachable(bytes name);
     error LengthMismatch();
     error InvalidCCIPRead();
@@ -67,17 +77,6 @@ contract UR {
                 res[i].bits |= RESOLVED_BIT; // the answer was onchain, we're done
             }
         }
-        if (missing == 1) {
-            // only one record was missing, wrap and call directly
-            uint256 i = _requireFirstUnresolved(res, 0);
-            _revertWrappedOffchain(
-                res[i].data,
-                res,
-                lookup,
-                lookup.resolver,
-                false
-            );
-        }
         if (missing > 1) {
             // multiple records were missing, try resolve(multicall)
             assembly {
@@ -91,13 +90,16 @@ contract UR {
                 abi.encodeCall(IExtendedResolver.resolve, (name, multi))
             );
             if (!ok && bytes4(v) == OffchainLookup.selector) {
-                // since this is now effectively only 1 record, wrap, and call directly
-                // we mark multi = true as this is our own construction
-                _revertWrappedOffchain(v, res, lookup, lookup.resolver, true);
+                Response[] memory bundle = new Response[](1);
+                bundle[0].bits = OFFCHAIN_BIT;
+                bundle[0].data = v;
+                _markAsBatched(res);
+                _revertBatchedGateway(lookup, bundle, res);
             }
         }
         if (missing > 0) {
-            _revertBatchedGateway(res, lookup);
+            _markAsBatched(res);
+            _revertBatchedGateway(lookup, res, new Response[](0));
         }
     }
 
@@ -133,91 +135,12 @@ contract UR {
         }
     }
 
-    struct WrappedCarry {
-        address sender;
-        bytes request;
-        bytes4 selector;
-        bytes carry;
-        Response[] res;
-        Lookup lookup;
-        bool multi;
-    }
-
-    function _revertWrappedOffchain(
-        bytes memory revertData,
-        Response[] memory res,
-        Lookup memory lookup,
-        address caller,
-        bool multi
-    ) internal view {
-        (
-            address sender,
-            string[] memory urls,
-            bytes memory request,
-            bytes4 selector,
-            bytes memory carry
-        ) = abi.decode(
-                _slice(revertData, 4),
-                (address, string[], bytes, bytes4, bytes)
-            );
-        if (caller != sender) revert InvalidCCIPRead();
-        revert OffchainLookup(
-            address(this),
-            urls,
-            request,
-            this.wrappedOffchainCallback.selector,
-            abi.encode(
-                WrappedCarry(
-                    sender,
-                    request,
-                    selector,
-                    carry,
-                    res,
-                    lookup,
-                    multi
-                )
-            )
-        );
-    }
-
-    function wrappedOffchainCallback(
-        bytes memory ccip,
-        bytes memory carry
-    ) external view returns (Lookup memory lookup, Response[] memory res) {
-        WrappedCarry memory wrapped = abi.decode(carry, (WrappedCarry));
-        (res, lookup) = (wrapped.res, wrapped.lookup);
-        (bool ok, bytes memory v) = wrapped.sender.staticcall(
-            abi.encodeWithSelector(wrapped.selector, ccip, wrapped.carry)
-        );
-        if (wrapped.multi) {
-            if (ok) {
-                _processMulticallAnswers(res, v);
-            } else {
-                // resolve(multcicall) didn't work
-                _revertBatchedGateway(res, lookup);
-            }
-        } else {
-            uint256 i = _requireFirstUnresolved(res, 0);
-            if (!ok && bytes4(v) == OffchainLookup.selector) {
-                _revertWrappedOffchain(v, res, lookup, wrapped.sender, false);
-            }
-            if (
-                ok &&
-                bytes4(wrapped.request) == IExtendedResolver.resolve.selector
-            ) {
-                v = abi.decode(v, (bytes)); // unwrap resolve()
-            }
-            res[i].data = v;
-            if (!ok) res[i].bits |= ERROR_BIT;
-            res[i].bits |= RESOLVED_BIT;
-        }
-    }
-
     // batched gateway
 
     function _revertBatchedGateway(
+        Lookup memory lookup,
         Response[] memory res,
-        Lookup memory lookup
+        Response[] memory alt
     ) internal view {
         BatchedGateway.Query[] memory queries = new BatchedGateway.Query[](
             res.length
@@ -235,7 +158,6 @@ contract UR {
                     _slice(res[i].data, 4),
                     (address, string[], bytes, bytes4, bytes)
                 );
-            res[i].bits |= BATCHED_BIT;
             queries[missing++] = BatchedGateway.Query(sender, urls, request);
         }
         assembly {
@@ -246,7 +168,7 @@ contract UR {
             _urls,
             abi.encodeCall(BatchedGateway.query, (queries)),
             this.batchedGatewayCallback.selector,
-            abi.encode(res, lookup) // batchedCarry
+            abi.encode(lookup, res, alt) // batchedCarry
         );
     }
 
@@ -254,12 +176,20 @@ contract UR {
         bytes memory ccip,
         bytes memory batchedCarry
     ) external view returns (Lookup memory lookup, Response[] memory res) {
-        (res, lookup) = abi.decode(batchedCarry, (Response[], Lookup));
+        Response[] memory multi;
+        (lookup, res, multi) = abi.decode(
+            batchedCarry,
+            (Lookup, Response[], Response[])
+        );
         (bool[] memory failures, bytes[] memory responses) = abi.decode(
             ccip,
             (bool[], bytes[])
         );
         if (failures.length != responses.length) revert LengthMismatch();
+        if (multi.length > 0 && failures[0]) {
+            // this was a failed resolve(multicall) attempt
+            _revertBatchedGateway(lookup, multi, new Response[](0));
+        }
         bool again;
         uint256 expected;
         for (uint256 i; i < res.length; i++) {
@@ -299,17 +229,35 @@ contract UR {
         }
         if (expected != failures.length) revert LengthMismatch();
         if (again) {
-            _revertBatchedGateway(res, lookup);
+            _revertBatchedGateway(lookup, res, multi);
+        }
+        if (multi.length > 0) {
+            if ((res[0].bits & ERROR_BIT) != 0) {
+                // server responded for resolve(multicall)
+                // but contract rejected it
+                _revertBatchedGateway(lookup, multi, new Response[](0));
+            } else {
+                // successful resolve(multicall)
+                _processMulticallAnswers(multi, res[0].data);
+                res = multi;
+            }
         }
     }
 
     // utils
 
+    function _markAsBatched(Response[] memory res) internal pure {
+        for (uint256 i; i < res.length; i++) {
+            if ((res[i].bits & OFFCHAIN_BIT) != 0) {
+                res[i].bits |= BATCHED_BIT;
+            }
+        }
+    }
+
     function _processMulticallAnswers(
         Response[] memory res,
         bytes memory encoded
     ) internal pure {
-        encoded = abi.decode(encoded, (bytes)); // unwrap resolve
         bytes[] memory answers = abi.decode(encoded, (bytes[]));
         uint256 expected;
         for (uint256 i; i < res.length; i++) {
@@ -343,17 +291,5 @@ contract UR {
             mstore(add(ret, skip), sub(mload(ret), skip))
             ret := add(ret, skip)
         }
-    }
-
-    function _requireFirstUnresolved(
-        Response[] memory res,
-        uint256 start
-    ) internal pure returns (uint256) {
-        for (; start < res.length; start++) {
-            if ((res[start].bits & RESOLVED_BIT) == 0) {
-                return start;
-            }
-        }
-        revert InvalidCCIPRead(); // "expected unresolved"
     }
 }

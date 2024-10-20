@@ -4,11 +4,21 @@ import { createResolve, deployUR, type ENSRecord } from "./resolver.js";
 import { CCIPReadRunner } from "../src/CCIPReadRunner.js";
 
 // bun run fetch raffy.eth
+// bun run fetch raffy.eth --always
 // bun run fetch raffy.eth addr
 // bun run fetch raffy.eth addr addr:60
 // bun run fetch raffy.eth text:avatar addr:60 chash pubkey
 
-const records: ENSRecord[] = process.argv.slice(3).map((spec) => {
+let contract = 'UR';
+const args = process.argv.slice(3).filter(x => {
+	if (/^-*always$/.test(x)) {
+		contract = 'URAlwaysBatched';
+		return;
+	}
+	return true;
+});
+
+const records: ENSRecord[] = args.map((spec) => {
 	switch (spec) {
 		case "dne":
 		case "addr":
@@ -25,13 +35,13 @@ const records: ENSRecord[] = process.argv.slice(3).map((spec) => {
 if (!records.length) {
 	records.push(["addr", 60], ["text", "avatar"]);
 }
-console.log({ records });
+console.log({ contract, records });
 
 const foundry = await Foundry.launch({
 	fork: process.env.PROVIDER,
-	infoLog: false,
+	infoLog: true,
 });
-const UR = await deployUR(foundry);
+const UR = await deployUR(foundry, contract);
 const resolve = createResolve(UR.connect(new CCIPReadRunner(foundry.provider)));
 try {
 	console.log(
