@@ -17,6 +17,7 @@ interface BatchedGateway {
         string[] urls;
         bytes data;
     }
+
     function query(
         Query[] memory
     ) external view returns (bool[] memory failures, bytes[] memory responses);
@@ -57,14 +58,14 @@ contract URAlwaysBatched {
                 ? abi.encodeCall(IExtendedResolver.resolve, (name, calls[i]))
                 : calls[i];
             (bool ok, bytes memory v) = lookup.resolver.staticcall(call); // call it
-            if (ok && lookup.extended) v = abi.decode(v, (bytes)); // unwrap if wildcard
+            if (ok && lookup.extended) v = abi.decode(v, (bytes)); // unwrap resolve()
             res[i].data = v;
             if (!ok && bytes4(v) == OffchainLookup.selector) {
-                res[i].bits |= OFFCHAIN_BIT; // mark this result as offchain
+                res[i].bits |= OFFCHAIN_BIT;
                 calls[missing++] = calls[i]; // assemble calldata for resolve(multicall)
             } else {
-                if (!ok) res[i].bits |= ERROR_BIT; // mark this as a failure
-                res[i].bits |= RESOLVED_BIT; // the answer was onchain, we're done
+                if (!ok) res[i].bits |= ERROR_BIT;
+                res[i].bits |= RESOLVED_BIT;
             }
         }
         if (missing > 1) {
@@ -176,11 +177,6 @@ contract URAlwaysBatched {
             (bool[], bytes[])
         );
         if (failures.length != responses.length) revert LengthMismatch();
-        if (multi.length > 0 && failures[0]) {
-            // this was a failed resolve(multicall) attempt
-            // try doing the calls separately
-            _revertBatchedGateway(lookup, multi, new Response[](0));
-        }
         bool again;
         uint256 expected;
         for (uint256 i; i < res.length; i++) {
@@ -224,15 +220,12 @@ contract URAlwaysBatched {
         }
         if (multi.length > 0) {
             if ((res[0].bits & ERROR_BIT) != 0) {
-                // server responded for resolve(multicall)
-                // but contract rejected it
-                // we could propagate the error to all of the responses
-                //or resolve them separately <== chose this option
+                // unsuccessful resolve(multicall)
+                // call them separately
                 _revertBatchedGateway(lookup, multi, new Response[](0));
             } else {
-                // successful resolve(multicall)
                 _processMulticallAnswers(multi, res[0].data);
-                res = multi;
+                res = multi; // unbundle
             }
         }
     }

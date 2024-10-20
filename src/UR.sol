@@ -57,14 +57,14 @@ contract UR {
                 ? abi.encodeCall(IExtendedResolver.resolve, (name, calls[i]))
                 : calls[i];
             (bool ok, bytes memory v) = lookup.resolver.staticcall(call); // call it
-            if (ok && lookup.extended) v = abi.decode(v, (bytes)); // unwrap if wildcard
+            if (ok && lookup.extended) v = abi.decode(v, (bytes)); // unwrap resolve()
             res[i].data = v;
             if (!ok && bytes4(v) == OffchainLookup.selector) {
-                res[i].bits |= OFFCHAIN_BIT; // mark this result as offchain
+                res[i].bits |= OFFCHAIN_BIT;
                 calls[missing++] = calls[i]; // assemble calldata for resolve(multicall)
             } else {
-                if (!ok) res[i].bits |= ERROR_BIT; // mark this as a failure
-                res[i].bits |= RESOLVED_BIT; // the answer was onchain, we're done
+                if (!ok) res[i].bits |= ERROR_BIT;
+                res[i].bits |= RESOLVED_BIT;
             }
         }
         if (missing == 1) {
